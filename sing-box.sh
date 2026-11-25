@@ -2700,13 +2700,21 @@ export_list() {
     printf '\n\n\n'
     c_bold 'Per-client subscriptions:'
     c_green "  Index:         http://${server}:${WIZ_NGINX_PORT:-8080}/sub/index"
+    printf '\n\n\n'
     c_green "  V2rayN:        http://${server}:${WIZ_NGINX_PORT:-8080}/sub/v2rayn"
+    printf '\n\n\n'
     c_green "  ShadowRocket:  http://${server}:${WIZ_NGINX_PORT:-8080}/sub/shadowrocket"
+    printf '\n\n\n'
     c_green "  Clash:         http://${server}:${WIZ_NGINX_PORT:-8080}/sub/clash"
+    printf '\n\n\n'
     c_green "  Clash 2:       http://${server}:${WIZ_NGINX_PORT:-8080}/sub/clash2"
+    printf '\n\n\n'
     c_green "  sing-box:      http://${server}:${WIZ_NGINX_PORT:-8080}/sub/sing-box"
+    printf '\n\n\n'
     c_green "  Throne:        http://${server}:${WIZ_NGINX_PORT:-8080}/sub/throne"
+    printf '\n\n\n'
     c_green "  QR:            http://${server}:${WIZ_NGINX_PORT:-8080}/sub/qr"
+    printf '\n\n\n'
     c_green "  Auto:          http://${server}:${WIZ_NGINX_PORT:-8080}/sub/auto"
   } > "$SB_LIST_FILE"
   # Clash YAML (subset: proxies + groups).
