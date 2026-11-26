@@ -30,7 +30,7 @@
 # ---------------------------------------------------------------------------
 # 1. Metadata and global defaults
 # ---------------------------------------------------------------------------
-MY_VERSION="v1.0.18 (2026.11.25)"
+MY_VERSION="v1.0.19 (2026.11.26)"
 MY_NAME="sing-box installer (independent build)"
 # The URL this installer is downloaded from. `sb` / `cj` re-fetch the
 # installer from here when the script was run via a one-liner, because
@@ -764,6 +764,33 @@ install_deps() {
       ;;
   esac
 }
+# v1.0.19: qrencode draws the subscription QR code (terminal ANSI
+# art + /sub/qr PNG). A fresh server may not have it, and without it
+# the QR is silently skipped. Install it on startup when missing so
+# the QR shows without a manual install. Best-effort only: never
+# abort the script when the install fails (the QR is then skipped
+# exactly as before).
+ensure_qrencode() {
+  command -v qrencode >/dev/null 2>&1 && return 0
+  case "${SYS_ID:-}" in
+    debian|ubuntu|armbian)
+      (apt-get update -qq 2>/dev/null; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq qrencode 2>/dev/null) || true
+      ;;
+    centos)
+      if command -v dnf >/dev/null 2>&1; then (dnf install -y -q qrencode 2>/dev/null) || true; else (yum install -y -q qrencode 2>/dev/null) || true; fi
+      ;;
+    fedora)
+      (dnf install -y -q qrencode 2>/dev/null) || true
+      ;;
+    alpine)
+      (apk add --no-cache qrencode 2>/dev/null) || true
+      ;;
+    arch)
+      (pacman -Sy --noconfirm --needed qrencode 2>/dev/null) || true
+      ;;
+  esac
+  return 0
+}
 # Ensure jq exists as a standalone binary under $SB_HOME (used by the
 # config writers even if the distro jq is old).
 ensure_jq() {
@@ -855,14 +882,56 @@ default_server_addr() {
 # IP). Any failure returns empty — never blocks or breaks the
 # menu. The same provider is shown after the IPv6 address too
 # (same VPS).
+# v1.0.19: map an ip-api.com country code to a Chinese country
+# name for the system-info display. Falls back to the English
+# country name (2nd arg) and then to the code itself when unmapped.
+country_zh() {
+  local code="$1" en="$2"
+  case "$code" in
+    US) printf '美国' ;; CN) printf '中国' ;; HK) printf '中国香港' ;;
+    TW) printf '中国台湾' ;; MO) printf '中国澳门' ;;
+    JP) printf '日本' ;; KR) printf '韩国' ;; SG) printf '新加坡' ;;
+    MY) printf '马来西亚' ;; TH) printf '泰国' ;; VN) printf '越南' ;;
+    PH) printf '菲律宾' ;; ID) printf '印度尼西亚' ;; IN) printf '印度' ;;
+    PK) printf '巴基斯坦' ;; BD) printf '孟加拉国' ;;
+    DE) printf '德国' ;; GB) printf '英国' ;; FR) printf '法国' ;;
+    NL) printf '荷兰' ;; IE) printf '爱尔兰' ;; BE) printf '比利时' ;;
+    CH) printf '瑞士' ;; AT) printf '奥地利' ;; SE) printf '瑞典' ;;
+    NO) printf '挪威' ;; FI) printf '芬兰' ;; DK) printf '丹麦' ;;
+    IT) printf '意大利' ;; ES) printf '西班牙' ;; PT) printf '葡萄牙' ;;
+    PL) printf '波兰' ;; CZ) printf '捷克' ;; SK) printf '斯洛伐克' ;;
+    HU) printf '匈牙利' ;; GR) printf '希腊' ;; RO) printf '罗马尼亚' ;;
+    BG) printf '保加利亚' ;; HR) printf '克罗地亚' ;; RS) printf '塞尔维亚' ;;
+    UA) printf '乌克兰' ;; RU) printf '俄罗斯' ;; TR) printf '土耳其' ;;
+    IL) printf '以色列' ;; AE) printf '阿联酋' ;; SA) printf '沙特阿拉伯' ;;
+    QA) printf '卡塔尔' ;; KW) printf '科威特' ;; BH) printf '巴林' ;;
+    OM) printf '阿曼' ;; JO) printf '约旦' ;; LB) printf '黎巴嫩' ;;
+    IQ) printf '伊拉克' ;; IR) printf '伊朗' ;; YE) printf '也门' ;;
+    EG) printf '埃及' ;; ZA) printf '南非' ;; NG) printf '尼日利亚' ;;
+    KE) printf '肯尼亚' ;; GH) printf '加纳' ;; MA) printf '摩洛哥' ;;
+    DZ) printf '阿尔及利亚' ;; TN) printf '突尼斯' ;;
+    CA) printf '加拿大' ;; MX) printf '墨西哥' ;; BR) printf '巴西' ;;
+    AR) printf '阿根廷' ;; CL) printf '智利' ;; CO) printf '哥伦比亚' ;;
+    PE) printf '秘鲁' ;; VE) printf '委内瑞拉' ;; UY) printf '乌拉圭' ;;
+    AU) printf '澳大利亚' ;; NZ) printf '新西兰' ;;
+    KZ) printf '哈萨克斯坦' ;; UZ) printf '乌兹别克斯坦' ;;
+    GE) printf '格鲁吉亚' ;; AM) printf '亚美尼亚' ;; AZ) printf '阿塞拜疆' ;;
+    IS) printf '冰岛' ;; LU) printf '卢森堡' ;; MT) printf '马耳他' ;;
+    CY) printf '塞浦路斯' ;; EE) printf '爱沙尼亚' ;; LV) printf '拉脱维亚' ;;
+    LT) printf '立陶宛' ;; SI) printf '斯洛文尼亚' ;;
+    *) if [ -n "$en" ]; then printf '%s' "$en"; else printf '%s' "$code"; fi ;;
+  esac
+}
 provider_for_ip() {
-  local ip="$1" cache="${SB_HOME}/provider_cache" cached_ip="" cached_org="" isp="" org="" body=""
+  local ip="$1" cache="${SB_HOME}/provider_cache" cached_ip="" cached_org="" cached_cc="" cached_en="" isp="" org="" cc="" en="" body=""
   [ -n "$ip" ] || return 0
   if [ -s "$cache" ]; then
     cached_ip="$(sed -n '1p' "$cache" 2>/dev/null || true)"
     cached_org="$(sed -n '2p' "$cache" 2>/dev/null || true)"
-    if [ "$cached_ip" = "$ip" ] && [ -n "$cached_org" ]; then
-      printf '%s' "$cached_org"
+    cached_cc="$(sed -n '3p' "$cache" 2>/dev/null || true)"
+    cached_en="$(sed -n '4p' "$cache" 2>/dev/null || true)"
+    if [ "$cached_ip" = "$ip" ] && [ -n "$cached_org" ] && [ -n "$cached_cc" ]; then
+      printf '%s %s' "$cached_org" "$(country_zh "$cached_cc" "$cached_en")"
       return 0
     fi
   fi
@@ -870,14 +939,20 @@ provider_for_ip() {
   # the lookup would silently fail and the provider would never
   # show. The data is public IP metadata (the server's own
   # public-IP record), so plain HTTP is fine here.
-  body="$(curl -fsSL --max-time 3 "http://ip-api.com/json/${ip}?fields=isp,org" 2>/dev/null || true)"
+  body="$(curl -fsSL --max-time 3 "http://ip-api.com/json/${ip}?fields=isp,org,countryCode,country" 2>/dev/null || true)"
   isp="$(printf '%s' "$body" | grep -oE '"isp"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)"
   org="$(printf '%s' "$body" | grep -oE '"org"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)"
+  cc="$(printf '%s' "$body" | grep -oE '"countryCode"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)"
+  en="$(printf '%s' "$body" | grep -oE '"country"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)"
   # Prefer isp (recognizable network operator); fall back to org.
   if [ -z "$isp" ]; then isp="$org"; fi
   if [ -n "$isp" ]; then
-    { printf '%s\n%s\n' "$ip" "$isp" > "$cache"; } 2>/dev/null || true
-    printf '%s' "$isp"
+    { printf '%s\n%s\n%s\n%s\n' "$ip" "$isp" "$cc" "$en" > "$cache"; } 2>/dev/null || true
+    if [ -n "$cc" ]; then
+      printf '%s %s' "$isp" "$(country_zh "$cc" "$en")"
+    else
+      printf '%s' "$isp"
+    fi
   fi
 }
 
@@ -1394,8 +1469,9 @@ write_inbound() {
         --arg tag "$tag" --argjson port "$port" --arg uuid "$uuid" \
         '{inbounds: [{type: "vless", tag: $tag, listen: "127.0.0.1", listen_port: $port,
           users: [{uuid: $uuid, flow: ""}],
-          tls: {enabled: true, alpn: ["http/1.1"],
+          tls: {enabled: true, min_version: "1.3", max_version: "1.3", alpn: ["http/1.1"],
             certificate_path: "/etc/sing-box/cert.pem", key_path: "/etc/sing-box/key.pem"},
+          multiplex: {enabled: true, padding: true, brutal: {enabled: true, up_mbps: 1000, down_mbps: 1000}},
           transport: {type: "ws", path: "/vless-ws-tls", max_early_data: 2048, early_data_header_name: "Sec-WebSocket-Protocol"}}]}' > "$file"
       ;;
     8) # Trojan + WebSocket (CF, behind nginx)
@@ -1404,17 +1480,20 @@ write_inbound() {
         --arg tag "$tag" --argjson port "$port" --arg pass "$TROJAN_PASSWORD" \
         '{inbounds: [{type: "trojan", tag: $tag, listen: "127.0.0.1", listen_port: $port,
           users: [{password: $pass}],
-          tls: {enabled: true, alpn: ["http/1.1"],
+          tls: {enabled: true, min_version: "1.3", max_version: "1.3", alpn: ["http/1.1"],
             certificate_path: "/etc/sing-box/cert.pem", key_path: "/etc/sing-box/key.pem"},
+          multiplex: {enabled: true, padding: true, brutal: {enabled: true, up_mbps: 1000, down_mbps: 1000}},
           transport: {type: "ws", path: "/trojan-ws", max_early_data: 2048, early_data_header_name: "Sec-WebSocket-Protocol"}}]}' > "$file"
       ;;
     9) # VMess + WebSocket + TLS (CF, behind nginx)
+      # v1.0.19: no TLS on this inbound — nginx proxies to it over
+      # plain HTTP; the client still connects
+      # with TLS to the Cloudflare edge, so the links are unchanged.
       "$jq" -n \
         --arg tag "$tag" --argjson port "$port" --arg uuid "$uuid" \
         '{inbounds: [{type: "vmess", tag: $tag, listen: "127.0.0.1", listen_port: $port,
           users: [{uuid: $uuid, alterId: 0}],
-          tls: {enabled: true, alpn: ["http/1.1"],
-            certificate_path: "/etc/sing-box/cert.pem", key_path: "/etc/sing-box/key.pem"},
+          multiplex: {enabled: true, padding: true, brutal: {enabled: true, up_mbps: 1000, down_mbps: 1000}},
           transport: {type: "ws", path: "/vmess-ws-tls", max_early_data: 2048, early_data_header_name: "Sec-WebSocket-Protocol"}}]}' > "$file"
       ;;
     10) # Trojan + HTTP (CF, behind nginx; replacement for Trojan + XHTTP)
@@ -1423,8 +1502,9 @@ write_inbound() {
         --arg tag "$tag" --argjson port "$port" --arg pass "$TROJAN_PASSWORD" \
         '{inbounds: [{type: "trojan", tag: $tag, listen: "127.0.0.1", listen_port: $port,
           users: [{password: $pass}],
-          tls: {enabled: true, alpn: ["http/1.1"],
+          tls: {enabled: true, min_version: "1.3", max_version: "1.3", alpn: ["http/1.1"],
             certificate_path: "/etc/sing-box/cert.pem", key_path: "/etc/sing-box/key.pem"},
+          multiplex: {enabled: true, padding: true, brutal: {enabled: true, up_mbps: 1000, down_mbps: 1000}},
           transport: {type: "http", path: "/trojan-http"}}]}' > "$file"
       ;;
     11) # Shadowsocks 2022 AES-256 (replacement for Shadowsocks + WebSocket; direct-only, not CF — v1.0.10)
@@ -2013,12 +2093,16 @@ write_nginx_conf() {
       # (https:// with verification off); the old plain http://
       # proxy sent a cleartext request to an inbound waiting for a
       # TLS handshake, so every CF node behind nginx timed out.
+      # v1.0.19: VMess-WS-TLS is the exception — its inbound has
+      # no TLS, so nginx proxies to it over
+      # plain http://. The other three CF inbounds keep TLS and
+      # get proxy_ssl_protocols TLSv1.3.
       # Shadowsocks 2022 has no transport for nginx to proxy, so it
       # has no location (direct-only).
       # v1.0.14: the HTTP / HTTPUpgrade / gRPC CF protocols are
       # removed (they timed out), so only four locations remain:
       # /vless-ws-tls, /vmess-ws-tls, /trojan-ws and /trojan-http.
-      local idx tag path port
+      local idx tag path port scheme ssl_lines
       for idx in "${SELECTED_IDX[@]}"; do
         tag="${PROTO_TAGS[$idx]}"
         case "$tag" in
@@ -2031,7 +2115,14 @@ write_nginx_conf() {
         [ -n "$path" ] || continue
         port="${PORT_FOR[$idx]:-}"
         [ -n "$port" ] || continue
-        printf '    location %s {\n        proxy_pass https://127.0.0.1:%s;\n        proxy_http_version 1.1;\n        proxy_set_header Upgrade $http_upgrade;\n        proxy_set_header Connection "upgrade";\n        proxy_set_header Host $host;\n        proxy_ssl_verify off;\n        proxy_ssl_session_reuse off;\n    }\n' "$path" "$port"
+        if [ "$tag" = "vmess-ws-tls" ]; then
+          scheme="http"
+          ssl_lines=""
+        else
+          scheme="https"
+          ssl_lines=$'\n        proxy_ssl_verify off;\n        proxy_ssl_session_reuse off;\n        proxy_ssl_protocols TLSv1.3;'
+        fi
+        printf "    location %s {\\n        proxy_pass %s://127.0.0.1:%s;\\n        proxy_http_version 1.1;\\n        proxy_set_header Upgrade \$http_upgrade;\\n        proxy_set_header Connection \"upgrade\";\\n        proxy_set_header Host \$host;%s\\n    }\\n" "$path" "$scheme" "$port" "$ssl_lines"
       done
       printf '    location / {\n        return 200 "sing-box subscription server\\n";\n        add_header Content-Type text/plain;\n    }\n}\n'
     } > /etc/nginx/conf.d/sing-box-sub.conf
@@ -2291,6 +2382,44 @@ resolve_try_domain() {
     domain="$(journalctl -u argo --no-pager -n 300 2>/dev/null | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1 | sed 's#https://##')"
   fi
   if [ -n "$domain" ]; then printf '%s' "$domain" > "${SB_HOME}/argo_domain"; printf '%s' "$domain"; fi
+}
+
+# v1.0.19: detect the fixed (Token) tunnel hostname from the argo
+# log. When cloudflared starts with a token it fetches the tunnel
+# config from Cloudflare and logs "Updated to new configuration"
+# with the ingress JSON, which carries the public hostname. One
+# token = one tunnel = one hostname, so the hostname follows the
+# token and must be detected, never hardcoded. Parses the NEWEST
+# such line (tail -1) from /var/log/argo.log (falls back to the
+# systemd journal). On success writes ${SB_HOME}/argo_domain,
+# updates WIZ_ARGO_DOMAIN + install.env, and prints the hostname.
+# On failure prints nothing and returns 1; callers must not break
+# the setup flow when detection fails.
+resolve_fixed_domain() {
+  [ "${WIZ_ARGO:-}" = "token" ] || return 1
+  local log="/var/log/argo.log" domain="" line=""
+  if [ -s "$log" ]; then
+    line="$(grep 'Updated to new configuration' "$log" 2>/dev/null | tail -1)"
+  fi
+  if [ -z "$line" ] && command -v journalctl >/dev/null 2>&1; then
+    line="$(journalctl -u argo --no-pager -n 300 2>/dev/null | grep 'Updated to new configuration' | tail -1)"
+  fi
+  [ -n "$line" ] || return 1
+  # The log embeds the ingress JSON with escaped quotes:
+  # config="{\"ingress\":[{\"hostname\":\"example.com\", ...}]}"
+  domain="$(printf '%s' "$line" | grep -oE '\\"hostname\\":\\"[^\\"]+' | head -1 | sed 's/.*\\"//')"
+  if [ -z "$domain" ]; then
+    domain="$(printf '%s' "$line" | grep -oE '"hostname":"[^"]+' | head -1 | sed 's/.*:"//')"
+  fi
+  [ -n "$domain" ] || return 1
+  printf '%s' "$domain" > "${SB_HOME}/argo_domain"
+  WIZ_ARGO_DOMAIN="$domain"
+  if grep -q "^WIZ_ARGO_DOMAIN=" "${SB_HOME}/install.env" 2>/dev/null; then
+    sed -i "s|^WIZ_ARGO_DOMAIN='.*'|WIZ_ARGO_DOMAIN='${domain}'|" "${SB_HOME}/install.env"
+  else
+    printf "WIZ_ARGO_DOMAIN='%s'\n" "$domain" >> "${SB_HOME}/install.env"
+  fi
+  printf '%s' "$domain"
 }
 
 # v1.0.16: `sb --sync-argo` — refresh the try-tunnel domain.
@@ -3289,6 +3418,8 @@ run_install() {
     svc start argo
     sleep 2
     resolve_try_domain || true
+    # v1.0.19: token tunnel — detect its hostname from the argo log.
+    resolve_fixed_domain || true
   fi
   if [ "$WIZ_SUBSCRIBE" != "no" ] && [ -n "$WIZ_SUBSCRIBE" ]; then
     # v1.0.6: use the safe starter — a stale nginx master outside
@@ -3917,6 +4048,10 @@ prompt_argo_for_cf() {
     if [ "${WIZ_ARGO}" = "try" ]; then
       local d=""; d="$(wait_try_domain || true)"
       if [ -n "$d" ] && [ "$d" != "${WIZ_ARGO_DOMAIN:-}" ]; then WIZ_ARGO_DOMAIN="$d"; save_install_env; fi
+    elif [ "${WIZ_ARGO}" = "token" ] && [ -z "${WIZ_ARGO_DOMAIN:-}" ]; then
+      # v1.0.19: fixed tunnel running but no domain stored yet.
+      resolve_fixed_domain >/dev/null || true
+      save_install_env
     fi
     return 0
   fi
@@ -3934,6 +4069,10 @@ prompt_argo_for_cf() {
         else
           msg_warn "$(tr_text argo_try_failed)"; WIZ_ARGO_DOMAIN=""; save_install_env
         fi
+      elif [ "${WIZ_ARGO}" = "token" ]; then
+        # v1.0.19: detect the fixed tunnel hostname from the argo log.
+        resolve_fixed_domain >/dev/null || true
+        save_install_env
       fi
       return 0
     fi
@@ -3955,7 +4094,12 @@ prompt_argo_for_cf() {
       write_services; setup_argo || { msg_err "$(tr_text argo_start_failed)"; return 1; }
       svc enable argo; svc start argo; sleep 2
       if ! svc_is_active argo; then sleep 2; svc start argo; sleep 2; fi
-      if svc_is_active argo; then msg_ok "$(tr_text argo_started)"; return 0; fi
+      if svc_is_active argo; then
+        # v1.0.19: detect the fixed tunnel hostname from the argo log.
+        resolve_fixed_domain >/dev/null || true
+        save_install_env
+        msg_ok "$(tr_text argo_started)"; return 0
+      fi
       msg_err "$(tr_text argo_start_failed)"; return 1
       ;;
     3)
@@ -4184,6 +4328,9 @@ change_argo_menu() {
   svc restart argo
   sleep 2
   resolve_try_domain || true
+  # v1.0.19: token tunnel — detect its hostname from the argo log
+  # (one token = one tunnel = one hostname; never hardcoded).
+  resolve_fixed_domain || true
   export_list
 }
 show_version() {
@@ -4435,7 +4582,7 @@ traffic_summary() {
   fi
 }
 # v1.0.16: tunnel type label for the Argo status line, e.g.
-# "(固定隧道 dd.corg.cc.cd)" or "(临时隧道 xxx.trycloudflare.com)".
+# "(固定隧道 tunnel.example.com)" or "(临时隧道 xxx.trycloudflare.com)".
 # Reads the live WIZ_ARGO / WIZ_ARGO_DOMAIN from install.env (never
 # a hardcoded string). Empty when Argo is off or has no domain.
 argo_tunnel_label() {
@@ -4458,9 +4605,13 @@ print_header() {
   c_green " $(tr_text new_features): $(tr_text new_features_list)"
   c_green " $(tr_text system_info):"
   printf -v line '\t%s: %s' "$(tr_text os_label)" "$SYS_PRETTY"; c_green "$line"
+  printf '\n'
   printf -v line '\t%s: %s' "$(tr_text kernel_label)" "$(uname -r)"; c_green "$line"
+  printf '\n'
   printf -v line '\t%s: %s' "$(tr_text arch_label)" "$ARCH_RAW"; c_green "$line"
+  printf '\n'
   printf -v line '\t%s: %s' "$(tr_text virt_label)" "$VIRT_KIND"; c_green "$line"
+  printf '\n'
   local provider="" ip4_extra="" ip6_extra=""
   provider="$(provider_for_ip "$WAN4")"
   if [ -n "$provider" ]; then
@@ -4468,17 +4619,21 @@ print_header() {
     [ -n "$WAN6" ] && ip6_extra=" ($provider)"
   fi
   printf -v line '\tIPv4: %s%s %s' "$WAN4" "$ip4_extra" "$WARP4"; c_green "$line"
+  printf '\n'
   printf -v line '\tIPv6: %s%s %s' "$WAN6" "$ip6_extra" "$WARP6"; c_green "$line"
+  printf '\n'
   local sb_mem argo_mem nginx_mem traffic line
   sb_mem="$(svc_memory sing-box)"
   argo_mem="$(svc_memory argo)"
   nginx_mem="$(svc_memory nginx)"
   traffic="$(traffic_summary)"
   printf -v line '\tSing-box: %-11s %-14s %s%s' "$(status_word "$SB_RUNNING")" "${SB_VERSION_INSTALLED:-$(tr_text status_not_installed)}" "$sb_mem" "$traffic"; c_green "$line"
+  printf '\n'
   local tunnel_label="" argo_extra=""
   tunnel_label="$(argo_tunnel_label)"
   [ -n "$tunnel_label" ] && argo_extra=" $tunnel_label"
   printf -v line '\tArgo:     %-11s %-14s %s%s' "$(status_word "$ARGO_RUNNING")" "${ARGO_VERSION_INSTALLED:-$(tr_text status_not_installed)}" "$argo_mem" "$argo_extra"; c_green "$line"
+  printf '\n'
   printf -v line '\tNginx:    %-11s %-14s %s' "$(status_word "$NGINX_RUNNING")" "${NGINX_VERSION_INSTALLED:-$(tr_text status_not_installed)}" "$nginx_mem"; c_green "$line"
   printf '================================================================================\n\n'
 }
@@ -4926,6 +5081,10 @@ main() {
   require_root
   detect_os
   detect_arch
+  # v1.0.19: make sure qrencode exists so the subscription QR code
+  # shows on a fresh server without a manual install. Best-effort;
+  # a failed install never aborts the script.
+  ensure_qrencode || true
   # v1.0.9: create sb/cj BEFORE the language prompt. The old code
   # only created them right before main_menu(), so if the user
   # exited at the language prompt (or the script died earlier),
